@@ -108,6 +108,7 @@ def mine(jid):
 class Session:
     def __init__(self, job, settings):
         self.job, self.settings = job, settings
+        self.job["lang"] = "en"       # Whisper carries its detected language on each word
         self.dir = Path(job["dir"])
         self.buf = self.dir / "buffer"
         self.buf.mkdir(exist_ok=True)

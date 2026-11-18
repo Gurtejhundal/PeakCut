@@ -1,8 +1,7 @@
-"""Speech to text with word timestamps, using Parakeet 0.6b through sherpa-onnx.
+"""Speech to text with word timestamps, using multilingual Whisper by default.
 
-It runs in one of two places. On this machine's processors (the default), or, when PEAKCUT_ASR_URL is set, on a
-separate machine with a graphics card (studio/asr_worker.py), which does the same work many times faster. If that
-machine cannot be reached, the pieces are done here instead, so transcription never stops because of it."""
+Existing Parakeet settings keep the English-only sherpa-onnx engine, on this machine or on a remote worker.
+If that worker cannot be reached, its pieces are decoded here instead."""
 import os
 import queue
 import threading
@@ -23,6 +22,8 @@ THREADS = int(os.environ.get("PEAKCUT_ASR_THREADS") or (4 if _CPUS >= 8 else max
 COPIES = int(os.environ.get("PEAKCUT_ASR_COPIES") or (1 if PROVIDER != "cpu" else max(1, _CPUS // THREADS) if _CPUS >= 8 else 1))
 _free: "queue.LifoQueue" = queue.LifoQueue()
 _made = 0
+_whisper_model = None
+_whisper_lock = threading.Lock()
 
 # The machine with the graphics card, if there is one.
 REMOTE = os.environ.get("PEAKCUT_ASR_URL", "").strip().rstrip("/")
@@ -273,10 +274,43 @@ def _decode_remote(pieces: list) -> list:
     return [(p["tokens"], p["timestamps"]) for p in got]
 
 
+def _whisper_words(audio: np.ndarray, on_progress=None) -> list:
+    """Recognise the original speech so caption translation keeps its word timings and context."""
+    global _whisper_model
+    if not len(audio):
+        if on_progress:
+            on_progress(1.0)
+        return []
+    from . import fetch_model
+    from faster_whisper import WhisperModel
+    with _whisper_lock:
+        if _whisper_model is None:
+            fetch_model.ensure()
+            _whisper_model = WhisperModel(str(config.WHISPER_MODEL_DIR), device=PROVIDER,
+                                         compute_type="int8" if PROVIDER == "cpu" else "float16",
+                                         cpu_threads=THREADS, local_files_only=True)
+        segments, info = _whisper_model.transcribe(audio.astype(np.float32) / 32768.0, task="transcribe",
+                                                   word_timestamps=True, vad_filter=True, beam_size=5,
+                                                   condition_on_previous_text=False)
+        words = []
+        for segment in segments:
+            if segment.text.strip() and not segment.words:
+                raise RuntimeError("The speech model did not return word timings. Try the clip again.")
+            words.extend({"w": w.word.strip(), "s": float(w.start), "e": float(w.end), "lang": info.language}
+                         for w in segment.words or [] if w.word.strip())
+            if on_progress:
+                on_progress(min(1.0, segment.end * 16000 / len(audio)))
+        if on_progress:
+            on_progress(1.0)
+        return words
+
+
 def transcribe(audio: np.ndarray, on_progress=None) -> list:
     """Returns [{'w': word, 's': start_sec, 'e': end_sec}, ...] for the whole audio.
     Speech is cut at quiet moments into 12-24 s pieces; silent pieces are skipped."""
     global _remote_down_until
+    if config.ASR_ENGINE == "whisper":
+        return _whisper_words(audio, on_progress)
     words = []
     todo = []
     for a, b in _chunks(audio):

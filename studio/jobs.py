@@ -403,21 +403,17 @@ def render_one(job, clip, words):
 
 
 def _caption_words(job, clip, words, off):
-    span = [round(clip["start"], 2), round(clip["end"], 2), "en2"]      # "en2": captions made always-English
-    if clip.get("fixed_for") == span and clip.get("fixed_words") and not any(
-            roman.needs_roman(w.get("w", "")) for w in clip["fixed_words"]):
+    span = [round(clip["start"], 2), round(clip["end"], 2), "en3", job.get("lang") or "", job.get("title") or ""]
+    if clip.get("fixed_for") == span and clip.get("fixed_words") and all(
+            roman.drawable(w.get("w", "")) for w in clip["fixed_words"]):
         raw = clip["fixed_words"]          # already tidied for this exact span: no second AI call
     else:
         raw = [w for w in words if clip["start"] - 1 <= w["s"] <= clip["end"] + 1]
-        try:
-            usage.set_context(job.get("creator"), job.get("title") or "")
-            raw = brain.english_captions(raw, job.get("lang") or "", job.get("title") or "",
-                                         youtube_english=lambda: _english_part(job, clip))
-            clip.update(fixed_words=raw, fixed_for=span)
-        except Exception:  # noqa: BLE001 - captions still render with the words as heard
-            pass
-    # the last word on it: whatever was said, nothing is drawn in Hindi or Urdu script
-    return [dict(w, s=w["s"] - off, e=w["e"] - off) for w in roman.words(raw)]
+        usage.set_context(job.get("creator"), job.get("title") or "")
+        raw = brain.english_captions(raw, job.get("lang") or "", job.get("title") or "",
+                                     youtube_english=lambda: _english_part(job, clip))
+        clip.update(fixed_words=raw, fixed_for=span)
+    return [dict(w, s=w["s"] - off, e=w["e"] - off) for w in raw]
 
 
 CLIP_MINUTES = float(config.env("PEAKCUT_CLIP_MINUTES", "15"))     # the longest one clip may take to make
@@ -675,7 +671,9 @@ def _run_job(job):
         if yt and not _covers(yt[0], lo / 16000, hi / 16000):
             yt = None
         job["transcript_from"] = "youtube" if yt else "own"
-        job["lang"] = yt[1] if yt else ""          # the language spoken, when YouTube says (decides the captions)
+        job["lang"] = yt[1] if yt else "en"       # Whisper carries its detected language on each word
+    else:
+        job["lang"] = "en"
     if resuming:
         try:
             words = json.loads((d / "words.json").read_text(encoding="utf-8"))

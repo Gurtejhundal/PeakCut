@@ -101,6 +101,13 @@ def main(data):
             ass = encode.call_args.args[-1]
             check("the renderer honors captions off even when it receives spoken words",
                   not has_dialogue(ass, "Cap") and has_dialogue(ass, "Hook", "KEEP THE HOOK"))
+
+            clip.pop("fixed_for")
+            with patch.object(brain, "english_captions", side_effect=RuntimeError("English translation failed")):
+                before = encode.call_count
+                jobs.render_one(job, clip, WORDS)
+            check("failed English preparation reports an error before the encoder runs",
+                  clip["status"] == "error" and "translation failed" in clip["error"] and encode.call_count == before)
     finally:
         db.engine.dispose()
 

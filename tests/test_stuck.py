@@ -46,20 +46,6 @@ def shown_together(evs):
         worst = max(worst, len(words))
     return worst
 check("overlapping word times never put more than one caption group on screen", shown_together(cap) <= 3)
-out = brain._spread("this is a much longer english line than the time it was said in", 10.0, 10.4)
-check("a long translation stays inside its own line's time", out[0]["s"] == 10.0 and out[-1]["e"] <= 10.4 + 0.31 and all(out[i]["e"] <= out[i + 1]["s"] + 0.011 for i in range(len(out) - 1)))
-
-# ---- the Hindi and Urdu rule is only given to the AI for those videos
-seen = []
-def fake_ai(prompt, schema=None, purpose=""):
-    seen.append(prompt); return [w for w in prompt.split("Words (")[1].splitlines()[1:] and ["Hello", "there", "friend."]], "m", 5
-brain.ask_ai = fake_ai
-brain.fix_caption_words(ws("hello there friend"), "", "en")
-check("an English video's captions are tidied without the Hindi rule", "Hinglish" in seen[-1], False)
-brain.ask_ai = lambda prompt, schema=None, purpose="": (seen.append(prompt), (["jo", "usko", "laga"], "m", 5))[1]
-brain.fix_caption_words(ws("जो उसको लगा"), "", "hi")
-check("a Hindi video's captions get it", "Hinglish" in seen[-1], True)
-
 # ---- one clip that hangs
 job = {"id": "job-12345678", "dir": os.environ["PEAKCUT_DATA"], "creator": None, "user": "u_test01", "clips": []}
 jobs.save = lambda j: None

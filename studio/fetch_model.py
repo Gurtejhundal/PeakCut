@@ -16,7 +16,10 @@ state = {"doing": False, "percent": 0, "error": ""}
 
 
 def ready() -> bool:
-    """Is the whole model there: the word list and all three parts?"""
+    """Are all files for the selected speech engine here?"""
+    if config.ASR_ENGINE == "whisper":
+        return all((config.WHISPER_MODEL_DIR / name).is_file()
+                   for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.txt"))
     d = config.ASR_MODEL_DIR
     if not (d / "tokens.txt").is_file():
         return False
@@ -41,6 +44,16 @@ def ensure() -> None:
         config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
         tmp, part = config.MODELS_DIR / "speech-model.tar.bz2", config.MODELS_DIR / "speech-model.unpacking"
         try:
+            if config.ASR_ENGINE == "whisper":
+                from faster_whisper.utils import download_model
+                download_model("small", output_dir=str(part))
+                if not all((part / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.txt")):
+                    raise OSError("the download did not contain the whole model")
+                shutil.rmtree(config.WHISPER_MODEL_DIR, ignore_errors=True)
+                part.rename(config.WHISPER_MODEL_DIR)
+                state["percent"] = 100
+                print("  Multilingual speech model ready.\n", flush=True)
+                return
             urllib.request.urlretrieve(URL, tmp, _progress)
             shutil.rmtree(part, ignore_errors=True)
             part.mkdir()

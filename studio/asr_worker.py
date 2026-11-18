@@ -16,6 +16,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 
+os.environ.setdefault("PEAKCUT_ASR_ENGINE", "parakeet")  # this worker's token protocol uses Parakeet
 from . import transcribe
 
 TOKEN = os.environ.get("PEAKCUT_ASR_TOKEN", "").strip()
@@ -77,7 +78,9 @@ async def decode(request: Request):
 def main():
     if not TOKEN:
         raise SystemExit("Set PEAKCUT_ASR_TOKEN: the speech machine refuses to start without a shared secret.")
-    transcribe._recognizer()            # load the model now, so the first request is not the slow one
+    if transcribe.config.ASR_ENGINE != "parakeet":
+        raise SystemExit("The remote speech worker needs PEAKCUT_ASR_ENGINE=parakeet. Whisper runs on the main server.")
+    transcribe._free.put(transcribe._take())  # load the model now, so the first request is not the slow one
     print(f"Speech machine ready on port {PORT} ({transcribe.PROVIDER})", flush=True)
     uvicorn.run(app, host=os.environ.get("PEAKCUT_ASR_HOST", "0.0.0.0"), port=PORT, log_level="warning")
 

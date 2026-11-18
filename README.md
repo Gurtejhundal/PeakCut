@@ -98,6 +98,26 @@ PEAKCUT_AI_KEY=your-key-here
   tokens each video took.
 - Speech to text does not use the AI service. It runs on your own machine, so audio never leaves it.
 
+## English captions
+
+Generated captions and AI-written hooks use English, including for Hindi, Urdu and Hinglish. With YouTube
+transcripts, English subtitles are preferred when available; otherwise the configured chat AI translates the
+transcript. Local speech recognition preserves the original speech and detected language for contextual translation. The same English words
+feed the downloadable ASS subtitles and the burned-in captions.
+
+Caption cleanup uses the video title and surrounding sentences to correct names and phonetic mistakes, including
+false profanity. It preserves every input word's timing slot and metadata; a merged word leaves an empty slot
+that the renderer skips. Translation can need a short English phrase in one slot. Speech alignment remains a
+model estimate, especially for translation, fast speech and overlapping speakers. Review important clips.
+
+If a non-English or unknown-language transcript cannot be translated, the clip reports an error with retry
+instructions instead of silently showing untranslated captions. Known English speech still works without a chat
+key. Speech recognition runs offline once the model is downloaded; English translation and contextual AI cleanup
+use your existing provider, or a local model through Ollama. No API key settings are changed.
+
+Old caption caches are rebuilt when clips are re-made. Existing video exports are left untouched. Changes to the
+video title or transcript language also rebuild the caption cache.
+
 ## Settings
 
 Everything is set through environment variables, normally in a `.env` file next to this README.
@@ -135,7 +155,10 @@ python -m studio.admin grant you@example.com
 | `tests/` | Tests that run against a throwaway copy of the app |
 | `deploy/`, `Dockerfile`, `docker-compose.yml` | One-server deployment with PostgreSQL and automatic HTTPS |
 
-Video work is done with `ffmpeg` and `yt-dlp`. Speech is transcribed with `sherpa-onnx` and the Parakeet model.
+Video work is done with `ffmpeg` and `yt-dlp`. New installs use multilingual `faster-whisper` (Whisper small)
+to recognise speech with word timestamps, locally. Existing `PEAKCUT_ASR_MODEL` or `PEAKCUT_ASR_URL` settings keep
+Parakeet; set `PEAKCUT_ASR_ENGINE=whisper` to switch. Parakeet v2 is English-only. The remote-worker protocol
+continues to use Parakeet; Whisper runs on the main server.
 Data is kept per user: accounts in the database (SQLite on your own computer, PostgreSQL on a server), videos and
 clips in each user's own folder. [AGENTS.md](AGENTS.md) is a short map of the code for contributors and AI coding
 assistants.
