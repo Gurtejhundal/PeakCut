@@ -55,6 +55,7 @@ def main() -> int:
                 ("standalone Roman spelling helpers", ["tests/test_roman.py"]),
                 ("English captions and multilingual speech", ["tests/test_english_captions.py"]),
                 ("caption batching and Gemini quota protection", ["tests/test_caption_budget.py"]),
+                ("quota allocation through Gemini HTTP and every AI task", ["tests/test_quota_allocation.py"]),
                 ("turning captions off and back on", ["tests/test_captions.py"]),
                 ("standalone narrator timing, audio sync and safe exports", ["tests/test_auto_edit.py"]),
                 ("connecting YouTube, Instagram and TikTok", ["tests/test_connect.py"]),
