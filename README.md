@@ -118,6 +118,24 @@ use your existing provider, or a local model through Ollama. No API key settings
 Old caption caches are rebuilt when clips are re-made. Existing video exports are left untouched. Changes to the
 video title or transcript language also rebuild the caption cache.
 
+Selected clips share caption requests in batches of up to 1,500 word slots. Overlapping speech is sent once per
+batch, and English cleanup returns only changed words. Cached English captions survive style changes, restarts
+and trims inside their original range. Translation still returns every timing slot; it is never shortened into
+a summary to save tokens.
+
+Gemini captions default to **seven attempts per rolling 24 hours**, shared across this server's users, including
+failed attempts. With a 20-request allowance this leaves 13 requests for clipping. Caption batches use the first
+configured model once, without automatic retries or per-clip fallback requests. Further caption requests pause
+when recorded caption tokens exceed 40% of clipping plus caption tokens in that window. This is a spending
+target: the last batch can exceed it, and actual proportions depend on the video and language. No extra clipping
+requests are sent to manufacture a ratio. These guards use this server's usage history; they cannot see requests
+made by other apps with the same key, and the rolling window is separate from Google's quota reset.
+
+Set `PEAKCUT_CAPTION_DAILY_REQUESTS` in `.env` to change the allowance (`0` disables both guards). Other providers
+are not capped. If the budget is reached, known English speech can render without AI corrections; clips needing
+translation show a retryable error. Existing exports, API keys and historical usage stay intact. Failed attempts
+show zero tokens when the provider did not return usage; zero does not prove the provider charged nothing.
+
 ## Settings
 
 Everything is set through environment variables, normally in a `.env` file next to this README.

@@ -1,5 +1,6 @@
 """English output, contextual corrections and unchanged timing slots. No service calls or model downloads."""
 import copy
+import json
 import os
 import sys
 import tempfile
@@ -59,7 +60,8 @@ def main(data):
               and [dict(w, w="") for w in out] == [dict(w, w="") for w in words])
         prompt = ask.call_args.args[0]
         check("translation includes title, surrounding sentences and untrusted-data rules",
-              all(x in prompt for x in ("Ninja", "<sentences>", source, "untrusted data", "Romanised Hinglish")))
+              all(x in prompt for x in ("Ninja", "surrounding sentences", "untrusted data", "Romanised Hinglish"))
+              and json.loads(prompt.splitlines()[-1])["words"] == source.split())
 
     words = ws("they are bitching nicks again")
     answer = ["They", "are", "benching", "xQc", "again."]

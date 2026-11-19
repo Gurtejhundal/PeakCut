@@ -54,6 +54,7 @@ def main() -> int:
                 ("no sign-in, and the AI key from the dashboard", ["tests/test_local.py"]),
                 ("standalone Roman spelling helpers", ["tests/test_roman.py"]),
                 ("English captions and multilingual speech", ["tests/test_english_captions.py"]),
+                ("caption batching and Gemini quota protection", ["tests/test_caption_budget.py"]),
                 ("turning captions off and back on", ["tests/test_captions.py"]),
                 ("standalone narrator timing, audio sync and safe exports", ["tests/test_auto_edit.py"]),
                 ("connecting YouTube, Instagram and TikTok", ["tests/test_connect.py"]),

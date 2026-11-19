@@ -1,10 +1,11 @@
 """A record of what the AI was used for: one row per call, with the tokens it took.
 
-Nothing is charged for and nothing is limited here. The AI key belongs to whoever runs this server, and their AI
-service bills them directly; this is only so they (and each user) can see where the tokens went."""
+The AI service bills the server owner's key directly. Caption requests also have a conservative Gemini
+allowance so they cannot consume all the requests needed to find clips."""
 import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 
 import sqlalchemy as sa
 
@@ -12,6 +13,8 @@ from . import ai, config, ctx, db
 
 _where = threading.local()
 _brief: dict = {}    # user -> (when, summary). Dropped the moment they make another AI call.
+_caption_lock = threading.Lock()
+# shortcut: reservations are serialized inside one server process; use database locking for multiple server processes.
 
 
 def set_context(creator=None, where=None):
@@ -24,12 +27,44 @@ def record(tokens_in: int, tokens_out: int, purpose: str):
     if not uid:
         return
     with db.engine.begin() as c:
-        c.execute(db.usage.insert().values(user_id=uid, t=time.time(), tokens_in=max(0, int(tokens_in)),
+        result = c.execute(db.usage.insert().values(user_id=uid, t=time.time(), tokens_in=max(0, int(tokens_in)),
                                            tokens_out=max(0, int(tokens_out)), purpose=purpose[:60],
                                            creator=getattr(_where, "creator", None),
                                            place=(getattr(_where, "where", None) or "")[:200]))
     _brief.pop(uid, None)
     ctx.bump(uid)
+    return result.inserted_primary_key[0]
+
+
+@contextmanager
+def caption_request(purpose):
+    """Reserve scarce Gemini requests before sending them, including requests that fail."""
+    with _caption_lock:
+        limit = int(config.env("PEAKCUT_CAPTION_DAILY_REQUESTS", "7"))
+        if ai.provider() == "gemini" and limit > 0 and ctx.uid_or_none():
+            u = db.usage.c
+            # A rolling day is conservative across time zones and does not need a timezone database on Windows.
+            with db.engine.connect() as c:
+                rows = c.execute(sa.select(u.purpose, u.tokens_in, u.tokens_out).where(u.t >= time.time() - 86400)).all()
+            captions = [row for row in rows if row.purpose.startswith("Caption")]
+            caption_tokens = sum(row.tokens_in + row.tokens_out for row in captions)
+            clipping_tokens = sum(row.tokens_in + row.tokens_out for row in rows if not row.purpose.startswith("Caption"))
+            if len(captions) >= limit or caption_tokens > clipping_tokens * 2 / 3:
+                raise RuntimeError("Caption budget reached; requests are reserved for clipping. Try Save and re-make "
+                                   "after the rolling 24-hour budget frees up, or use a local AI. "
+                                   "PEAKCUT_CAPTION_DAILY_REQUESTS sets the Gemini caption allowance (0 disables it).")
+        call_id = record(0, 0, purpose)
+        yield call_id
+
+
+def finish_caption(call_id, tokens_in, tokens_out):
+    if call_id is None:
+        return
+    with db.engine.begin() as c:
+        c.execute(db.usage.update().where(db.usage.c.id == call_id).values(
+            tokens_in=max(0, int(tokens_in)), tokens_out=max(0, int(tokens_out))))
+    _brief.clear()
+    ctx.bump()
 
 
 def forget(uid: str):

@@ -402,17 +402,60 @@ def render_one(job, clip, words):
     save(job)
 
 
+def _caption_span(job, clip):
+    return [round(clip["start"], 2), round(clip["end"], 2), "en3", job.get("lang") or "", job.get("title") or ""]
+
+
+def _cached_captions(job, clip):
+    span, old = _caption_span(job, clip), clip.get("fixed_for")
+    fixed = clip.get("fixed_words")
+    if (isinstance(old, list) and len(old) == len(span) and old[2:] == span[2:]
+            and old[0] <= span[0] <= span[1] <= old[1] and fixed is not None
+            and all(roman.drawable(w.get("w", "")) for w in fixed)):
+        return [w for w in fixed if clip["start"] - 1 <= w["s"] <= clip["end"] + 1]
+    return None
+
+
+def _caption_source(job, clip, words):
+    raw = [w for w in words if clip["start"] - 1 <= w["s"] <= clip["end"] + 1]
+    lang = brain.caption_language(raw, job.get("lang") or "")
+    if brain.needs_translation(lang):
+        try:
+            en = _english_part(job, clip)
+        except Exception:  # noqa: BLE001 - translate the source if the optional English transcript is unavailable
+            en = None
+        if en:
+            return en, "en"
+    return raw, lang
+
+
+def _prepare_captions(job, items):
+    pending, groups = [], []
+    for clip, words in items:
+        if clip.get("status") == "error" or not clip.get("captions", True):
+            continue
+        if _cached_captions(job, clip) is not None:
+            continue
+        pending.append(clip)
+        groups.append(_caption_source(job, clip, words))
+    if not pending:
+        return
+    usage.set_context(job.get("creator"), job.get("title") or "")
+    for clip, result in zip(pending, brain.fix_caption_batches(groups, job.get("title") or "")):
+        if isinstance(result, Exception):
+            clip.update(status="error", error=safe.friendly(result, 400))
+        else:
+            clip.update(fixed_words=result, fixed_for=_caption_span(job, clip))
+    save(job)  # persist the batch before rendering, so a restart does not pay for it again
+
+
 def _caption_words(job, clip, words, off):
-    span = [round(clip["start"], 2), round(clip["end"], 2), "en3", job.get("lang") or "", job.get("title") or ""]
-    if clip.get("fixed_for") == span and clip.get("fixed_words") and all(
-            roman.drawable(w.get("w", "")) for w in clip["fixed_words"]):
-        raw = clip["fixed_words"]          # already tidied for this exact span: no second AI call
-    else:
-        raw = [w for w in words if clip["start"] - 1 <= w["s"] <= clip["end"] + 1]
+    raw = _cached_captions(job, clip)
+    if raw is None:
+        raw, lang = _caption_source(job, clip, words)
         usage.set_context(job.get("creator"), job.get("title") or "")
-        raw = brain.english_captions(raw, job.get("lang") or "", job.get("title") or "",
-                                     youtube_english=lambda: _english_part(job, clip))
-        clip.update(fixed_words=raw, fixed_for=span)
+        raw = brain.english_captions(raw, lang, job.get("title") or "")
+        clip.update(fixed_words=raw, fixed_for=_caption_span(job, clip))
     return [dict(w, s=w["s"] - off, e=w["e"] - off) for w in raw]
 
 
@@ -637,11 +680,12 @@ def _run_job(job):
 
     began = {}      # clip id -> when work on it started
 
-    def make(clip, words_now):
+    def prepare(clip, words_now):
         began[clip["id"]] = time.time()
         if src["type"] == "url" and (pieces or not whole_video()):
             _fetch_piece(job, clip, audio)
-        if clip["status"] != "error" and clip.get("captions", True) and yt and yt[1].lower().startswith("en"):
+        if (clip["status"] != "error" and clip.get("captions", True) and _cached_captions(job, clip) is None
+                and yt and yt[1].lower().startswith("en")):
             # The clip was found with YouTube's transcript. What is shown on screen comes from our own model,
             # run on just this clip: full punctuation, nothing blanked out, timings to the word.
             a0, b0 = max(lo, int((clip["start"] - 1.5) * 16000)), min(hi, int((clip["end"] + 1.5) * 16000))
@@ -652,14 +696,40 @@ def _run_job(job):
             if len(tw) >= 3:
                 exact[clip["id"]] = (a0 / 16000, b0 / 16000, tw)
                 words_now = tw
-        if clip["status"] != "error":
-            render_one(job, clip, words_now)
+        return words_now
 
     cpus = os.cpu_count() or 4
     renders = ThreadPoolExecutor(2 if cpus < 8 else min(6, cpus // 6))  # more clips made at once on a bigger machine
     futures = []
     step = BLOCK * 16000 if span > PROGRESSIVE_FROM else hi - lo
     blocks = [(x, min(hi, x + step)) for x in range(lo, hi, step)] or [(lo, hi)]
+
+    def make(clip, clip_words):
+        began[clip["id"]] = time.time()
+        render_one(job, clip, clip_words)
+
+    def make_many(clips, words_now):
+        queued_at = time.time()
+        prepared = [(clip, renders.submit(ctx.bind(prepare), clip, words_now)) for clip in clips]
+        items = []
+        for clip, future in prepared:
+            try:
+                # Preparation keeps the same watchdog as rendering, including queued work ahead of this clip.
+                while not future.done():
+                    started = began.get(clip["id"])
+                    if time.time() > (started or queued_at) + CLIP_MINUTES * 60:
+                        future.cancel()
+                        raise TimeoutError("Preparing this clip took too long. Try Save and re-make.")
+                    time.sleep(0.2)
+                items.append((clip, future.result()))
+            except Exception as error:  # noqa: BLE001 - another clip can still be prepared
+                clip.update(status="error", error=safe.friendly(error, 400))
+        _prepare_captions(job, items)
+        for clip, clip_words in items:
+            if clip["status"] != "error":
+                began.pop(clip["id"], None)
+                futures.append((renders.submit(ctx.bind(make), clip, clip_words), clip))
+
     words, tokens, model = [], 0, None
     done_blocks = 0
     yt = None
@@ -684,10 +754,10 @@ def _run_job(job):
         if done_blocks < len(blocks):     # words past the last finished part are transcribed again
             cut = blocks[done_blocks][0] / 16000
             words = [w for w in words if w["s"] < cut]
-        for c in job["clips"]:            # clips found before the restart that were not finished yet
-            if c.get("status") not in ("done", "error"):
-                c["status"] = "queued"
-                futures.append((renders.submit(ctx.bind(make), c, list(words)), c))
+        pending = [c for c in job["clips"] if c.get("status") not in ("done", "error")]
+        for c in pending:
+            c["status"] = "queued"
+        make_many(pending, list(words))
         save(job)
     # The transcript of the next part is written while the AI is still reading this one (the AI is a wait on the
     # network, the transcript is work on this machine), so neither waits for the other.
@@ -751,6 +821,7 @@ def _run_job(job):
                 else:
                     keep.append(c)
             found = keep
+        pending = []
         for c in found:
             c.update(id=f"clip{len(job['clips']) + 1:02d}", start=round(c["start"] + shift, 2),
                      end=round(c["end"] + shift, 2), style=o["style"], layout=o["layout"],
@@ -762,7 +833,8 @@ def _run_job(job):
             if face:
                 c["facecam"] = face
             job["clips"].append(c)
-            futures.append((renders.submit(ctx.bind(make), c, list(words)), c))
+            pending.append(c)
+        make_many(pending, list(words))
         job["ai"] = {"model": model, "tokens": tokens, "note": "", "log": notes[-5:]}
         job["done_blocks"] = bi + 1       # a restart from here on carries on with the next part
         save(job)
